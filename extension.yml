@@ -1,0 +1,75 @@
+schema_version: "1.0"
+
+extension:
+  id: "fleet"
+  name: "Fleet"
+  version: "0.1.0"
+  description: "Build a feature's user stories in parallel chains of agent sessions, cross-checked for overlap and contradiction, merged through one trunk"
+  category: "process"
+  effect: "read-write"
+  author: "ankoor7"
+  repository: "https://github.com/ankoor7/spec-kit-fleet"
+  homepage: "https://github.com/ankoor7/spec-kit-fleet"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=0.2.0"
+  tools:
+    - name: "git"
+      required: true
+    - name: "python3"
+      version: ">=3.9"
+      required: true
+    - name: "gh"
+      required: false
+  commands:
+    - "speckit.tasks"
+
+provides:
+  commands:
+    - name: "speckit.fleet.plan"
+      file: "commands/speckit.fleet.plan.md"
+      description: "Partition tasks.md into fleet chains, cross-check them and settle findings with the owner"
+    - name: "speckit.fleet.launch"
+      file: "commands/speckit.fleet.launch.md"
+      description: "Publish a planned fleet, start its watchdog and launch every chain"
+    - name: "speckit.fleet.chain"
+      file: "commands/speckit.fleet.chain.md"
+      description: "Run one item of a fleet chain (used by chain sessions)"
+    - name: "speckit.fleet.crosscheck"
+      file: "commands/speckit.fleet.crosscheck.md"
+      description: "Read-only check of a chain's plan or task against its sibling chains"
+    - name: "speckit.fleet.tick"
+      file: "commands/speckit.fleet.tick.md"
+      description: "Fleet watchdog and message handler for the originating session"
+    - name: "speckit.fleet.resolve"
+      file: "commands/speckit.fleet.resolve.md"
+      description: "Resolve an open contradiction with the owner and restart the stopped chains"
+    - name: "speckit.fleet.status"
+      file: "commands/speckit.fleet.status.md"
+      description: "Show a fleet's state"
+
+  scripts:
+    - name: "fleet"
+      file: "scripts/python/fleet.py"
+      description: "Status files, planning, launching and local transport"
+      runtimes: ["python"]
+
+  config:
+    - name: "fleet-config.yml"
+      template: "config-template.yml"
+      description: "Transport, branches, models, gate commands and reserved number blocks"
+      required: false
+
+hooks:
+  after_tasks:
+    command: "speckit.fleet.plan"
+    optional: true
+    prompt: "Plan a fleet to build these user stories in parallel?"
+    description: "Offer to partition the new tasks.md into fleet chains"
+
+tags:
+  - "orchestration"
+  - "parallel"
+  - "multi-agent"
+  - "implementation"

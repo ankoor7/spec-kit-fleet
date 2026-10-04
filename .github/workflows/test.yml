@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit and end-to-end tests
+        run: python -m unittest discover -s tests -v
+      - name: Lint
+        run: pipx run ruff check --select E,F,W,B --ignore E501,E701,E702,E741 scripts tests
+      - name: Install into a Spec Kit project
+        run: |
+          pipx install git+https://github.com/github/spec-kit.git
+          specify init probe --integration claude --script sh --ignore-agent-tools --non-interactive
+          cd probe
+          specify extension add --dev "$GITHUB_WORKSPACE"
+          test -f .claude/skills/speckit-fleet-chain/SKILL.md
+          test -f .specify/extensions/fleet/scripts/python/fleet.py
+          test ! -e .specify/extensions/fleet/tests

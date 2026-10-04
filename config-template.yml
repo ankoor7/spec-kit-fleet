@@ -1,0 +1,63 @@
+# spec-kit-fleet configuration.
+# Copy to .specify/extensions/fleet/fleet-config.yml and commit it: every chain
+# session reads it from its own checkout. Per-machine overrides go in
+# local-config.yml beside it (git-ignored by Spec Kit).
+# SPECKIT_FLEET_TRANSPORT overrides `transport` for one shell.
+
+# cloud: chains are Claude Code on the web sessions (create_session,
+#        send_message, get_session, create_trigger).
+# local: chains are headless agent processes in git worktrees on this machine;
+#        messages go to an inbox in the git directory.
+transport: cloud
+
+# The remote that holds the trunk, the status branch and the chain branches.
+# For a local fleet with no hosted remote, a bare repository path works.
+remote: origin
+
+branches:
+  trunk: claude/fleet              # finished chains merge here, fast-forward only
+  record: claude/fleet-record      # status files; an orphan branch, no code, no CI
+  release_target: main             # the trunk reaches it through one pull request
+  chain_prefix: claude/fleet-      # chain branch = <prefix><fleet>-<chain>
+  # Cloud sessions are known to push to claude/*; other prefixes are unverified.
+
+models:
+  work: claude-opus-5-5            # work items (tasks)
+  light: claude-sonnet-5-5         # integrate and register items, cross-checker
+
+# Commands every chain runs. quick: after each task and after a merge.
+# full: before an integrate item merges into the trunk.
+gate:
+  quick: []
+  # - npm run typecheck
+  # - npm test -- --run
+  full: []
+  # - npm run lint
+  # - npm test
+  # - npm run build
+
+# Commands that rebuild generated files after a merge (lockfiles, snapshots).
+regenerate: []
+
+# Tasks per work item (one session each). The cloud cap below can raise it.
+tasks_per_item: 6
+
+# Cloud only: a session lineage is refused past depth 8, so a chain holds at
+# most 7 items, integrate and register included.
+max_items_per_chain: 7
+
+# Numbered files two chains must not both create, e.g. database migrations.
+# Each chain gets a block of reserve_block numbers above the highest present.
+reserved_sequences: {}
+#  migrations: "db/migrations/*.sql"
+reserve_block: 5
+
+local:
+  # The command that runs one chain session; the prompt is appended as the last
+  # argument and {model} is substituted. The session must be able to run git,
+  # python3 and your gate without a permission prompt: there is nobody to
+  # answer one. Grant that with allow rules in .claude/settings.json, or run the
+  # fleet in a container and use --dangerously-skip-permissions there.
+  agent_command: "claude -p --model {model} --permission-mode acceptEdits"
+  # Where chain worktrees go, relative to the main checkout.
+  worktrees_dir: "../{repo}-fleet"

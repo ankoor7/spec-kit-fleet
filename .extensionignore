@@ -1,0 +1,8 @@
+.git/
+.github/
+tests/
+__pycache__/
+*.pyc
+.gitignore
+CHANGELOG.md
+.ruff_cache/
