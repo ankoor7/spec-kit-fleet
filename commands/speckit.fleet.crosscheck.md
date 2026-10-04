@@ -22,8 +22,9 @@ context, so it must stand on its own.
 - `mode`: `preflight` (whole chains, no code yet) or `unit` (one task).
 - `fleet`, and `chain` (this chain's id; in `preflight` mode, `all` checks
   every pair).
-- `preflight`: `draft=<dir>`, the directory `F plan --out` wrote; the fleet is
-  not published yet.
+- `preflight`: `draft=<dir>`, the directory `F plan --out` wrote; those chains
+  are not published yet. With `live=yes`, a spec is joining a published
+  fleet: also check the draft against every chain already in it.
 - `unit`: `item`, `task`, `files` (the paths the task will touch) and `spec`.
 
 If one is missing, say which and stop.
@@ -43,7 +44,9 @@ Shared files every chain edits by construction (lockfiles, a changelog,
 ## Method
 
 1. **Read the fleet.** `preflight`: the manifest, queues and
-   `conflicts.jsonl` under `<draft>/.fleet/<fleet>/`. `unit`:
+   `conflicts.jsonl` under `<draft>/.fleet/<fleet>/`; with `live=yes`, also the
+   published fleet as in `unit` mode. Its chains are the siblings, and work
+   they have already committed counts as built. `unit`:
    `F get <fleet> manifest.json`, `F conflicts <fleet>`, and each sibling's
    queue with `F get <fleet> <chain>.queue.jsonl`. `git fetch` the trunk and
    every sibling branch; record each head SHA for the report.
@@ -52,8 +55,12 @@ Shared files every chain edits by construction (lockfiles, a changelog,
 3. For each sibling chain:
    - **Specs.** Compare the user stories, functional requirements (`FR-…`),
      success criteria, `data-model.md` entities and `contracts/` each side
-     builds. Two features in one fleet are compared on shared entities and
-     endpoints. Look for two statements that cannot both hold.
+     builds. For a sibling from **another spec** (its manifest `feature`
+     differs), compare the two specs' shared entities, endpoints, data rules,
+     user-visible behaviour, and the constitution's guidance for both. These
+     specs were written in separate conversations, often without knowledge of
+     each other, so a contradiction is most likely here. Look for two
+     statements that cannot both hold.
    - **Planned files.** The manifest's `surfaces.paths` and each item's
      `brief`. Two chains that **create** the same file conflict at every
      merge between them: report an overlap and recommend, at pre-flight,

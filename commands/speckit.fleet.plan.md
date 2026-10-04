@@ -19,6 +19,14 @@ what you cannot find.
 command runs in the session that will hear the chains' results (the
 **originating session**), with the owner present.
 
+**New fleet or join.** Run `git fetch <remote> <record>` and
+`F state <fleet>`. If the fleet does not exist, this is a new fleet. If it
+exists, this spec **joins** it: another conversation's spec is already being
+built, and this session will own the chains this spec adds. The steps are the
+same; the differences are marked **Join**. Several specs can share one fleet
+this way, each planned and launched from its own conversation, so overlap and
+contradiction between them are checked like those within one spec.
+
 ## Steps
 
 1. **Configuration.** If `.specify/extensions/fleet/fleet-config.yml` does not
@@ -34,14 +42,15 @@ command runs in the session that will hear the chains' results (the
    not been run since `tasks.md` changed, offer to run it first: a
    cross-artifact inconsistency is cheaper to fix now than as a fleet
    contradiction.
-3. **Draft.** `F plan <fleet> <feature dir> … --out <scratch dir>`. It
+3. **Draft.** `F plan <fleet> <feature dir> … --out <scratch dir>`. Chain
+   ids carry the feature number (`001-us1`), so two specs never collide. It
    writes the manifest, one queue per chain and an empty `conflicts.jsonl`,
    and prints the chains:
-   - a `foundation` chain for Setup and Foundational phases, which every
+   - a `<NNN>-foundation` chain for Setup and Foundational phases, which every
      story chain `needs` (its commits are cherry-picked; nobody waits for a
      merge);
-   - one chain per user-story phase (`us1`, `us2`, …);
-   - a `polish` chain, which needs every story chain's work;
+   - one chain per user-story phase (`<NNN>-us1`, `<NNN>-us2`, …);
+   - a `<NNN>-polish` chain, which needs every story chain's work;
    - per chain, work items of at most `tasks_per_item` tasks, then an
      `integrate` and a `register` item. On the cloud transport a chain holds
      at most `max_items_per_chain` items; the planner widens items to fit.
@@ -50,6 +59,9 @@ command runs in the session that will hear the chains' results (the
    with the Agent tool, all in parallel: "Read
    `.specify/extensions/fleet/commands/speckit.fleet.crosscheck.md` and follow
    it with mode=preflight fleet=<fleet> chain=<chain> draft=<scratch dir>."
+   **Join:** add `live=yes` to each prompt. The check then also reads the
+   published fleet's chains, their specs, queues and branches, including
+   work they have already committed.
 5. **Owner Q&A.** Put every finding to the owner with `AskUserQuestion`, one
    question per finding, framed by purpose: what each side is for, citing
    the user story, `FR-…` and acceptance scenario, never conflict or item
@@ -65,5 +77,17 @@ command runs in the session that will hear the chains' results (the
      item of that chain) to the waiting item's `needs` in the draft.
    Record each decision, dated, under "Pre-flight" in the draft's
    `owner-decisions.md`. Then `F check <fleet> <scratch dir>` until it passes.
+   **Join: a finding against a chain already in the fleet.** You (the
+   joining spec's owner) decide it: the spec that joins later settles
+   contradictions with earlier specs (owner's decision, 2026-10-04). The
+   running chains keep running while you decide; this spec does not launch
+   until every such question is answered.
+   - If the answer changes only this spec: edit it as above.
+   - If the answer changes an earlier spec, follow the `speckit.fleet.resolve`
+     command for it. That stops only the affected chains, at their next task
+     boundary, writes the decision into the earlier spec as one commit merged
+     into those chains' branches, and tells the earlier spec's session.
+   - A dependency on a running chain's item goes into `needs` as `<chain>/<item>`
+     like any other; the item waits until that work is done and cherry-picks it.
 6. Offer the `speckit.fleet.launch` command (`/speckit-fleet-launch` in
    Claude Code) with the same fleet name and scratch directory.

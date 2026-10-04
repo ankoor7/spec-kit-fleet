@@ -10,9 +10,9 @@ Fleet takes the same `tasks.md` and gives each user-story phase its own chain:
 
 | Spec Kit | Fleet |
 | --- | --- |
-| Setup + Foundational phases | the `foundation` chain; every story chain needs its work |
-| Phase *n*: User Story *k* | chain `us<k>`, on branch `claude/fleet-<fleet>-us<k>` |
-| Polish phase | the `polish` chain; it needs every story chain's work |
+| Setup + Foundational phases | the `<NNN>-foundation` chain; every story chain needs its work |
+| Phase *n*: User Story *k* | chain `<NNN>-us<k>`, on branch `claude/fleet-<fleet>-<NNN>-us<k>` |
+| Polish phase | the `<NNN>-polish` chain; it needs every story chain's work |
 | Tasks `T001…` | units built one at a time inside a chain: cross-check → implement → validate → review → commit |
 | `[P]` | tells you that tasks touch separate files; the parallelism comes from running chains side by side, not from `[P]` |
 | `spec.md`, `plan.md`, `data-model.md`, `contracts/` | where a contradiction between chains is found and where the owner's decision is written down |
@@ -46,7 +46,7 @@ This installs seven commands. In Claude Code they are skills named
 | Command | Runs in | Does |
 | --- | --- | --- |
 | `speckit.fleet.plan` | originating session | `tasks.md` → chains and queues; pre-flight cross-check; owner Q&A |
-| `speckit.fleet.launch` | originating session | publish the branches, start the watchdog, launch every chain |
+| `speckit.fleet.launch` | originating session | publish the fleet, or join a spec to a running one; start the watchdog; launch the chains |
 | `speckit.fleet.chain` | each chain session | claim → merge trunk → cherry-pick needs → build tasks → close → baton |
 | `speckit.fleet.crosscheck` | read-only subagent | report overlap / dependency / contradiction with sibling chains |
 | `speckit.fleet.tick` | originating session | handle chain messages; watchdog rules; wrap-up |
@@ -87,6 +87,39 @@ Run `plan` and `launch` from the session that should hear the results: the
 **originating session**. Chains report to it, it asks you the questions that
 are yours to answer, and its watchdog restarts a chain whose session died.
 
+## Several specs, one fleet
+
+Two conversations can each write a spec and build it in the same fleet. The
+fleet then checks overlap and contradiction across both specs, not only
+within each one.
+
+1. **Conversation 1** plans and launches spec `001-albums` as usual. This
+   publishes the fleet, and this session becomes the **coordinator**.
+2. **Conversation 2** writes spec `002-search`, then runs
+   `/speckit-fleet-plan albums specs/002-search` with the same fleet name. The
+   plan finds the published fleet and switches to a **join**:
+   - The pre-flight check compares the new chains with every chain already in
+     the fleet, including work those chains have committed.
+   - `/speckit-fleet-launch` runs `fleet.py join`, which adds the new chains
+     without touching the running ones. Reserved number blocks move above
+     every block the fleet already holds, so the two specs never take the
+     same migration number.
+3. From then on the per-task checks see every chain in the fleet. A chain of
+   one spec waits for, or cherry-picks, an item of the other like any other
+   item it `needs`.
+
+**Who hears what** (owner's decisions, 2026-10-04):
+
+| Matter | Handled by |
+| --- | --- |
+| A chain's messages, restarts, waits and blocks | the session that launched the chain |
+| A contradiction between the two specs | the session whose spec joined **later** (`fleet.py decider`); the other session is told the outcome |
+| A contradiction found when a spec joins | the joining session; the chains already running keep running, and the joining spec does not launch until it is answered |
+| The trunk: release pull request, failing checks, back-merges | the coordinator |
+
+Chain ids carry the feature number (`001-us1`, `002-us1`), so two specs never
+collide.
+
 ## Transports
 
 ### Cloud: Claude Code on the web
@@ -94,7 +127,7 @@ are yours to answer, and its watchdog restarts a chain whose session died.
 - Each chain item is a fresh cloud session. `fleet.py launch` prints the
   `create_session` arguments, and the launcher passes them unchanged.
 - Chains report with `send_message` to the originating session.
-- The watchdog is an hourly Routine bound to the originating session.
+- Each originating session runs its own watchdog, an hourly Routine bound to it.
 - A session lineage is refused past depth 8. A chain therefore holds at most
   7 items, integrate and register included. The planner makes work items
   larger to stay under that limit.
@@ -106,7 +139,8 @@ are yours to answer, and its watchdog restarts a chain whose session died.
   detached process: `claude -p --model {model} …`, with the prompt appended
   and the log written under `.git/speckit-fleet/<fleet>/logs/`.
 - Chains report through an inbox in the git directory. You read it with
-  `fleet.py inbox`, or `/speckit-fleet-tick` reads it for you.
+  `fleet.py inbox <fleet> --session <id>`, one inbox per originating session, or
+  `/speckit-fleet-tick` reads it for you.
 - Run the watchdog with `/loop 15m /speckit-fleet-tick fleet=<fleet>`, or from
   cron.
 - **Permissions.** A headless session cannot answer a permission prompt. Give

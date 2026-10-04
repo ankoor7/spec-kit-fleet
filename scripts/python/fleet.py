@@ -468,6 +468,12 @@ def check_tree(root: Path, fleet: str, cfg: Optional[Dict[str, Any]] = None) -> 
     if orig and not SESSION_RE.match(orig):
         probs.append(f"manifest.json: originating_session '{orig}' is not a session id")
     chain_ids = [c.get("id") for c in m.get("chains", [])]
+    for c in m.get("chains", []):
+        co = c.get("originating_session") or ""
+        if co and not SESSION_RE.match(co):
+            probs.append(f"manifest.json: chain {c.get('id')}: originating_session '{co}' is not a session id")
+    for i in sorted({i for i in chain_ids if chain_ids.count(i) > 1}):
+        probs.append(f"manifest.json: chain id {i} appears {chain_ids.count(i)} times")
     for cid in m.get("merge_order", []):
         if cid not in chain_ids:
             probs.append(f"manifest.json: merge_order names {cid}, which is no chain")
@@ -614,7 +620,6 @@ def plan_fleet(fleet: str, features: List[Path], cfg: Dict[str, Any], root: Path
                title: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]]]]:
     if not features:
         raise FleetError("name at least one feature directory (specs/NNN-name)")
-    multi = len(features) > 1
     per_item = int(cfg["tasks_per_item"])
     cap = int(cfg["max_items_per_chain"]) if cfg["transport"] == "cloud" else 0
     chains: List[Dict[str, Any]] = []
@@ -659,10 +664,10 @@ def plan_fleet(fleet: str, features: List[Path], cfg: Dict[str, Any], root: Path
         if not tf.is_file():
             raise FleetError(f"{tf} not found: run the tasks command for this feature first")
         phases = parse_tasks(tf)
-        pre = ""
-        if multi:
-            m = re.match(r"(\d+)", feature.name)
-            pre = (m.group(1) if m else feature.name.lower()) + "-"
+        # Chain ids carry the feature number, so a spec that joins the fleet
+        # later cannot collide with one already in it.
+        m = re.match(r"(\d+)", feature.name)
+        pre = (m.group(1) if m else re.sub(r"[^a-z0-9-]+", "-", feature.name.lower()).strip("-")) + "-"
         found = [p for p in phases if p["kind"] in ("setup", "foundational")]
         before = len(chains)
         add_chain(f"{pre}foundation", f"{feature.name} setup and foundation", feature, found, [])
@@ -770,11 +775,20 @@ def template_block(name: str, first: bool = False) -> str:
     return body
 
 
-def fleet_values(f: Fleet, chain: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+def originating(m: Dict[str, Any], chain: Optional[Dict[str, Any]]) -> str:
+    """The session a chain reports to: the session whose spec brought the chain
+    into the fleet. The fleet's own originating_session is the first such
+    session, the coordinator, which also keeps the trunk-level rules."""
+    return (chain or {}).get("originating_session") or m.get("originating_session") or ""
+
+
+def fleet_values(f: Fleet, chain: Optional[Dict[str, Any]] = None,
+                 session: Optional[str] = None) -> Dict[str, str]:
     m = f.manifest
     v = {"fleet": f.name, "record": f.record, "trunk": f.trunk, "remote": f.remote,
          "release_target": f.release_target, "transport": f.cfg["transport"],
-         "originating": m.get("originating_session") or "", "ext": EXT_DIR_REL}
+         "originating": session or originating(m, chain), "coordinator": m.get("originating_session") or "",
+         "ext": EXT_DIR_REL}
     if chain:
         v.update({"chain": chain["id"], "branch": chain["branch"]})
     return v
@@ -807,8 +821,8 @@ def repo_url() -> str:
 
 def launch(f: Fleet, chain_id: str, first: bool, dry_run: bool) -> Dict[str, Any]:
     chain = f.chain(chain_id)
-    if f.cfg["transport"] == "cloud" and not SESSION_RE.match(f.manifest.get("originating_session") or ""):
-        raise FleetError("manifest has no originating_session")
+    if f.cfg["transport"] == "cloud" and not SESSION_RE.match(originating(f.manifest, chain)):
+        raise FleetError(f"chain {chain_id} has no originating session")
     nxt = launchable(f, chain_id)
     prompt = render(template_block("chain-prompt.md", first), fleet_values(f, chain))
     model = nxt.get("model") or f.cfg["models"]["work" if nxt.get("kind") == "work" else "light"]
@@ -946,6 +960,9 @@ def cmd_publish(a: argparse.Namespace) -> None:
         raise FleetError("--originating must be this session's id (get_session returns it)")
     manifest = json.loads((src / "manifest.json").read_text())
     manifest["originating_session"] = a.originating or "local_" + secrets.token_hex(6)
+    for c in manifest["chains"]:
+        c["originating_session"] = manifest["originating_session"]
+        c["joined_at"] = manifest["created_at"]
     (src / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     probs = check_tree(src.parent.parent, a.fleet, cfg)
     if probs:
@@ -960,7 +977,8 @@ def cmd_publish(a: argparse.Namespace) -> None:
     def mutate(wt: Path) -> None:
         d = wt / f.dir
         if (d / "manifest.json").exists() and not a.force:
-            raise FleetError(f"fleet {a.fleet} already exists on {f.record} (use --force to replace it)")
+            raise FleetError(f"fleet {a.fleet} already exists on {f.record}: add a spec to it with join, "
+                             "or use --force to replace the whole fleet")
         if d.exists():
             shutil.rmtree(d)
         shutil.copytree(src, d)
@@ -978,6 +996,91 @@ def cmd_publish(a: argparse.Namespace) -> None:
     print(f"published fleet {a.fleet} to {f.record}; originating session {manifest['originating_session']}")
 
 
+def merge_join(live: Dict[str, Any], draft: Dict[str, Any], session: str) -> Dict[str, Any]:
+    """The live manifest with a draft's chains added: ids checked, reserved
+    number blocks moved above every block the fleet already holds."""
+    have = {c["id"] for c in live["chains"]}
+    clash = sorted(c["id"] for c in draft["chains"] if c["id"] in have)
+    if clash:
+        raise FleetError(f"chains already in the fleet: {', '.join(clash)} (is this spec already joined?)")
+    out = json.loads(json.dumps(live))
+    at = now()
+    names = {n for c in live["chains"] + draft["chains"] for n in (c.get("reserved") or {})}
+    shift = {}
+    for n in names:
+        top = max((c["reserved"][n][1] for c in live["chains"] if n in (c.get("reserved") or {})), default=0)
+        lows = [c["reserved"][n][0] for c in draft["chains"] if n in (c.get("reserved") or {})]
+        shift[n] = max(0, top + 1 - min(lows)) if lows else 0
+    for c in json.loads(json.dumps(draft["chains"])):
+        for n, (lo, hi) in (c.get("reserved") or {}).items():
+            c["reserved"][n] = [lo + shift[n], hi + shift[n]]
+        c["originating_session"] = session
+        c["joined_at"] = at
+        out["chains"].append(c)
+        out["merge_order"].append(c["id"])
+    out["features"] = list(dict.fromkeys(out.get("features", []) + draft.get("features", [])))
+    return out
+
+
+def cmd_join(a: argparse.Namespace) -> None:
+    cfg = load_config()
+    f = Fleet(a.fleet, cfg)
+    src = Path(a.source).resolve() / STATUS_ROOT / a.fleet
+    if not (src / "manifest.json").is_file():
+        raise FleetError(f"no draft at {src}; run plan with the fleet's name first")
+    if cfg["transport"] == "cloud" and not SESSION_RE.match(a.originating or ""):
+        raise FleetError("--originating must be this session's id (get_session returns it)")
+    session = a.originating or "local_" + secrets.token_hex(6)
+    draft = json.loads((src / "manifest.json").read_text())
+    f.load()
+    f.fetch(f.trunk)
+    result: Dict[str, Any] = {}
+
+    def mutate(wt: Path) -> None:
+        d = wt / f.dir
+        live = json.loads((d / "manifest.json").read_text())
+        merged = merge_join(live, draft, session)
+        for c in draft["chains"]:
+            shutil.copy(src / f"{c['id']}.queue.jsonl", d / f"{c['id']}.queue.jsonl")
+        (d / "manifest.json").write_text(json.dumps(merged, indent=2) + "\n")
+        dec = src / "owner-decisions.md"
+        if dec.exists():
+            ours = d / "owner-decisions.md"
+            ours.write_text(ours.read_text().rstrip("\n") + f"\n\n## Joined: {', '.join(draft.get('features', []))} ({now()}, {session})\n\n"
+                            + dec.read_text().split("## Pre-flight", 1)[-1].split("## Stopped", 1)[0].strip() + "\n")
+        result.update(merged)
+
+    f.transact(f"fleet {a.fleet}: join {', '.join(draft.get('features', []))}", mutate)
+    for c in draft["chains"]:
+        if not f.fetch(c["branch"]):
+            git("push", "-q", f.remote, f"{f.ref(f.trunk)}:refs/heads/{c['branch']}")
+            print(f"created {c['branch']} from {f.trunk}")
+    print(f"joined {', '.join(c['id'] for c in draft['chains'])} to fleet {a.fleet}; "
+          f"they report to {session}; the fleet's coordinator is {result.get('originating_session')}")
+
+
+def decider(m: Dict[str, Any], conflict: Dict[str, Any]) -> Dict[str, Any]:
+    """Who settles a conflict: the session whose spec joined the fleet last
+    among the chains it names (owner's decision, 2026-10-04)."""
+    order = {cid: n for n, cid in enumerate(m["merge_order"])}
+    chains = [c for c in m["chains"] if c["id"] in (conflict.get("chains") or [])]
+    if not chains:
+        raise FleetError(f"conflict {conflict.get('id')} names no chain of this fleet")
+    last = max(chains, key=lambda c: (c.get("joined_at") or "", order.get(c["id"], 0)))
+    others = sorted({originating(m, c) for c in chains} - {originating(m, last)})
+    return {"conflict": conflict.get("id"), "decides": originating(m, last), "chain": last["id"],
+            "feature": last.get("feature"), "inform": others}
+
+
+def cmd_decider(a: argparse.Namespace) -> None:
+    f = Fleet(a.fleet)
+    m = f.load()
+    row = next((r for r in latest(f.log("conflicts")) if r.get("id") == a.conflict), None)
+    if row is None:
+        raise FleetError(f"no conflict {a.conflict}")
+    emit(decider(m, row))
+
+
 def cmd_state(a: argparse.Namespace) -> None:
     f = Fleet(a.fleet)
     m = f.load()
@@ -986,11 +1089,15 @@ def cmd_state(a: argparse.Namespace) -> None:
     out: Dict[str, Any] = {"fleet": f.name, "record": f.record, "trunk": f.trunk,
                            "release_target": f.release_target, "transport": f.cfg["transport"],
                            "originating_session": m.get("originating_session"), "chains": []}
+    out["coordinator"] = m.get("originating_session")
     for cid in m["merge_order"]:
         q = f.queue(cid)
         nxt = next((r for r in q if r["status"] != "done"), None)
+        chain = f.chain(cid)
         out["chains"].append({
-            "id": cid, "done": sum(r["status"] == "done" for r in q), "items": len(q),
+            "id": cid, "feature": chain.get("feature"), "originating_session": originating(m, chain),
+            "mine": (originating(m, chain) == a.session) if a.session else None,
+            "done": sum(r["status"] == "done" for r in q), "items": len(q),
             "next": None if nxt is None else {k: nxt.get(k) for k in ("id", "status", "needs", "note")},
             "needs_done": None if nxt is None else all(f.item_status(n) == "done" for n in nxt.get("needs") or []),
             "running": [{"id": r["id"], "session_id": r.get("session_id")} for r in q if r["status"] == "running"],
@@ -1008,10 +1115,13 @@ def cmd_state(a: argparse.Namespace) -> None:
         emit(out)
         return
     print(f"fleet {f.name}  transport {out['transport']}  record {f.record}  trunk {f.trunk}  release target {f.release_target}")
-    print(f"originating session {out['originating_session'] or '<none>'}\n")
+    print(f"coordinator (first originating session) {out['originating_session'] or '<none>'}\n")
     for c in out["chains"]:
         n = c["next"]
-        line = f"{c['id']}: {c['done']}/{c['items']} done; next: "
+        if a.session and not c["mine"]:
+            line = f"{c['id']} (reports to {c['originating_session']}): {c['done']}/{c['items']} done; next: "
+        else:
+            line = f"{c['id']}: {c['done']}/{c['items']} done; next: "
         line += "none (chain finished)" if n is None else f"{n['id']} [{n['status']}]" + \
             (f" needs {','.join(n['needs'])}{'' if c['needs_done'] else ' (not all done)'}" if n.get("needs") else "")
         if c["running"]:
@@ -1037,7 +1147,9 @@ def cmd_prompt(a: argparse.Namespace) -> None:
     f = Fleet(a.fleet)
     f.load()
     if a.which == "watchdog":
-        print(render(template_block("watchdog-prompt.md"), fleet_values(f)))
+        if not a.session:
+            raise FleetError("prompt watchdog needs --session: the session the watchdog runs in")
+        print(render(template_block("watchdog-prompt.md"), fleet_values(f, session=a.session)))
     else:
         if not a.chain:
             raise FleetError("prompt chain needs --chain")
@@ -1245,20 +1357,25 @@ def cmd_message(a: argparse.Namespace) -> None:
     text = a.text if a.text is not None else Path(a.file).read_text()
     head = f"Fleet {f.name}, chain {a.chain}: {a.kind}."
     body = text if text.startswith(f"Fleet {f.name}") else f"{head}\n{text}".rstrip()
+    # The chain's own session, then the session of every chain named with
+    # --also (a conflict with a chain from another spec reaches both).
+    sessions = list(dict.fromkeys([originating(m, f.chain(c)) for c in [a.chain] + (a.also or [])]))
     if f.cfg["transport"] == "cloud":
-        emit({"session_id": m["originating_session"], "message": body,
-              "tool": "mcp__claude-code-remote__send_message"})
+        emit({"tool": "mcp__claude-code-remote__send_message",
+              "recipients": [{"session_id": s, "message": body} for s in sessions]})
         return
-    p = runtime_dir(f.name) / "inbox.jsonl"
-    with f.lock(), open(p, "a") as fh:
-        fh.write(json.dumps({"at": now(), "chain": a.chain, "kind": a.kind, "message": body}) + "\n")
-    print(f"delivered to {p}")
+    rt = runtime_dir(f.name)
+    with f.lock():
+        for s in sessions:
+            with open(rt / f"inbox-{s}.jsonl", "a") as fh:
+                fh.write(json.dumps({"at": now(), "chain": a.chain, "kind": a.kind, "message": body}) + "\n")
+    print(f"delivered to {', '.join(sessions)}")
 
 
 def cmd_inbox(a: argparse.Namespace) -> None:
     f = Fleet(a.fleet)
     rt = runtime_dir(f.name)
-    p, cur = rt / "inbox.jsonl", rt / "inbox.cursor"
+    p, cur = rt / f"inbox-{a.session}.jsonl", rt / f"inbox-{a.session}.cursor"
     rows = jsonl_load(p.read_text(), p.name) if p.exists() else []
     start = int(cur.read_text()) if cur.exists() and not a.all else 0
     emit(rows[start:])
@@ -1315,14 +1432,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     s = sub("publish", cmd_publish, "push a draft: trunk, status branch, chain branches")
     s.add_argument("fleet"); s.add_argument("--from", dest="source", required=True)
     s.add_argument("--originating"); s.add_argument("--force", action="store_true")
+    s = sub("join", cmd_join, "add a planned spec's chains to a published fleet")
+    s.add_argument("fleet"); s.add_argument("--from", dest="source", required=True)
+    s.add_argument("--originating")
+    s = sub("decider", cmd_decider, "which session settles a conflict (the later-joined spec's)")
+    s.add_argument("fleet"); s.add_argument("conflict")
     s = sub("state", cmd_state, "one read of the whole fleet")
     s.add_argument("fleet"); s.add_argument("--json", action="store_true")
+    s.add_argument("--session", help="mark the chains this session originated")
     s = sub("launch", cmd_launch, "start a chain's next item (cloud: print create_session args)")
     s.add_argument("fleet"); s.add_argument("chain")
     s.add_argument("--first", action="store_true"); s.add_argument("--dry-run", action="store_true")
     s = sub("prompt", cmd_prompt, "print the chain or watchdog prompt")
     s.add_argument("which", choices=["chain", "watchdog"]); s.add_argument("fleet")
     s.add_argument("--chain"); s.add_argument("--first", action="store_true")
+    s.add_argument("--session", help="watchdog: the session it runs in")
     s = sub("claim", cmd_claim, "claim a chain's next item (exit 4: closed as a wait)")
     s.add_argument("fleet"); s.add_argument("chain"); s.add_argument("--session", required=True)
     s = sub("close", cmd_close, "close a running item")
@@ -1356,11 +1480,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     s.add_argument("fleet"); s.add_argument("name")
     s = sub("message", cmd_message, "report upward (local: inbox; cloud: send_message args)")
     s.add_argument("fleet"); s.add_argument("chain")
-    s.add_argument("kind", choices=["started", "blocked", "conflict", "ready", "merged", "shared", "finished"])
+    s.add_argument("kind", choices=["started", "blocked", "conflict", "resolved", "ready", "merged", "shared", "finished"])
+    s.add_argument("--also", action="append", metavar="CHAIN",
+                   help="also tell the session of this chain (a conflict across specs)")
     g = s.add_mutually_exclusive_group(required=True)
     g.add_argument("--text"); g.add_argument("--file")
-    s = sub("inbox", cmd_inbox, "local transport: unread chain messages")
-    s.add_argument("fleet"); s.add_argument("--peek", action="store_true"); s.add_argument("--all", action="store_true")
+    s = sub("inbox", cmd_inbox, "local transport: unread chain messages for one session")
+    s.add_argument("fleet"); s.add_argument("--session", required=True)
+    s.add_argument("--peek", action="store_true"); s.add_argument("--all", action="store_true")
     s = sub("alive", cmd_alive, "is a session still running (local: exit 0 alive, 1 dead)")
     s.add_argument("session")
     s = sub("gate", cmd_gate, "run the configured quick or full gate, or the regenerators")

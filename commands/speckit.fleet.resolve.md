@@ -16,6 +16,12 @@ an id, take every `open` conflict from `F conflicts <fleet> --open`.
 `F` means `python3 .specify/extensions/fleet/scripts/python/fleet.py`. Run
 this in the originating session, with the owner present.
 
+**Who decides.** `F decider <fleet> <conflict id>` names the session that
+settles it. When the chains belong to different specs, that is the session
+whose spec joined the fleet later (owner's decision, 2026-10-04). If it is not
+this session, stop, and tell the owner in one line which spec's conversation
+decides it.
+
 ## Steps
 
 1. **Read both sides.** The conflict's `this`, `that`, `evidence` and
@@ -42,5 +48,10 @@ this in the originating session, with the owner present.
    `done`: `F add-item <fleet> <chain> <id> --title … --before-integrate`.
 6. **Restart** each affected chain: `F launch <fleet> <chain>` (cloud: then
    `create_session` with its output unchanged). On the cloud transport a
-   restart from here also resets the session lineage depth.
-7. Tell the owner in one line what was decided and which chains restarted.
+   restart from here also resets the session lineage depth. A restarted chain
+   of another spec still reports to its own session: the launch prompt names
+   that session, not this one.
+7. **Tell the other sessions.** For each session in the decider's `inform`
+   list: `F message <fleet> <one of its chains> resolved --text "<conflict id>: <decision>; restarted: <chains>"`.
+   Cloud: send each entry in `recipients` with `send_message`.
+8. Tell the owner in one line what was decided and which chains restarted.

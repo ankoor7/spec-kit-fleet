@@ -10,9 +10,16 @@ description: "Fleet watchdog and message handler: read chain messages and fleet 
 $ARGUMENTS
 ```
 
-The input names `fleet=<fleet>`, and may carry a chain message (a turn that
-starts `Fleet <fleet>, chain …`). Run this in the originating session only:
-on every chain message, and on every watchdog tick.
+The input names `fleet=<fleet>` and `session=<this session's id>`, and may
+carry a chain message (a turn that starts `Fleet <fleet>, chain …`). Run this
+only in a session that brought a spec into the fleet: on every chain message,
+and on every watchdog tick. Cloud: if `session` is missing, it is the `id`
+`get_session` returns.
+
+A fleet can hold specs from several conversations. Each session acts on **its
+own chains**, the ones it launched (`mine` in `F state <fleet> --json --session <id>`).
+The **coordinator**, the session that published the fleet (`coordinator` in
+the same output), also keeps the trunk rules (9–11).
 
 `F` means `python3 .specify/extensions/fleet/scripts/python/fleet.py`.
 "Start the chain" means `F launch <fleet> <chain>`, then, on the cloud
@@ -21,15 +28,16 @@ to the owner unless a rule below says to.
 
 ## 1. Messages
 
-Cloud: the message is this turn's input. Local: `F inbox <fleet>` prints
-every unread message; handle each in order.
+Cloud: the message is this turn's input. Local: `F inbox <fleet> --session <id>`
+prints every unread message for this session; handle each in order.
 
 | kind | do |
 | --- | --- |
 | `started` | Note it for the channel check. Nothing else. |
 | `shared` | For every sibling item whose `needs` names the shared item and are now all `done`: if it is a `blocked` wait, `F set <fleet> <chain> <item> --status pending --note "needs done"`; then start its chain if the chain has no running item. |
 | `blocked` | A wait (`waits for …`): nothing; `shared` ends it. Anything else: put it to the owner (section 3). |
-| `conflict` | Run `speckit.fleet.resolve` for the conflict id. |
+| `conflict` | `F decider <fleet> <conflict id>`. If `decides` is this session, run `speckit.fleet.resolve` for it. Otherwise tell the owner in one line which spec's conversation decides it and which of this session's chains are stopped meanwhile; do nothing else. |
+| `resolved` | Another spec's session settled a conflict that touched this session's chains. Tell the owner the decision in one line. The deciding session restarts the affected chains, so take no other action. |
 | `ready` | Tell the owner in one line that the chain is ready to merge and waiting for the trunk's checks, naming the failing run and the chain that owns the fix. If that chain's items are all `done`, queue a fix item on it (`F add-item <fleet> <chain> <id> --title … --before-integrate`) and start it. |
 | `merged` | Tell the owner in one line what the trunk now holds. |
 | `finished` | Note it. When every chain has finished, run the wrap-up (section 4). |
@@ -40,11 +48,12 @@ Run `F state <fleet> --json`. Then:
 
 1. **First tick after launch:** a chain with no `started` message: tell the
    owner in one line that the channel failed for that chain.
-2. **Open questions:** an `open` conflict, or a `blocked` item that is not a
-   wait, with no answer in `owner-decisions.md` (`F get <fleet> owner-decisions.md`):
-   handle it as if its message had arrived.
+2. **Open questions:** an `open` conflict whose decider is this session, or
+   a `blocked` item of this session's chains that is not a wait, with no
+   answer in `owner-decisions.md` (`F get <fleet> owner-decisions.md`): handle
+   it as if its message had arrived.
 
-For each chain, apply the **first** rule that matches. The next item is the
+For each of **this session's** chains, apply the **first** rule that matches. The next item is the
 first item, in queue order, that is not `done`.
 
 3. An item is `running`: is its session alive? Cloud: `get_session` on its
@@ -60,7 +69,7 @@ first item, in queue order, that is not `done`.
    the trunk head: set it `pending` with a note, and start the chain.
 8. Otherwise, or every item `done`: nothing.
 
-Then the trunk:
+Then the trunk, **in the coordinator only**:
 
 9. The release pull request's checks fail on the trunk head, and the merge
    that broke them (the oldest failing head since the last passing one; its
@@ -85,12 +94,15 @@ copy in a scratch directory, `F put`), then act on it.
 
 ## 4. Wrap-up
 
-When every chain has sent `finished` (or its items are all `done`): if the
-Wrap-up section of `owner-decisions.md` still reads `_Not yet run._`, run the
-owner Q&A over every chain's register (`F get <fleet> HANDOFF-<chain>.md`) and
-every conflict still `logged`, and replace that line with the answers.
-Checking the marker first stops two wakes from running it twice. Then tell
-the owner in one line whether the trunk is releasable: its head, the release
-pull request, its checks, and any open release blocker. Cloud: disable the
-watchdog (`update_trigger`, `enabled: false`). Local: tell the owner to stop
-the `/loop`.
+When every chain **this session launched** has sent `finished` (or its items
+are all `done`), run the owner Q&A over those chains' registers
+(`F get <fleet> HANDOFF-<chain>.md`) and every `logged` conflict naming them.
+Record the answers under a dated `## Wrap-up: <feature>` heading in
+`owner-decisions.md`. Skip any feature that already has such a heading: this
+stops two wakes from running the Q&A twice. Then stop this session's watchdog
+(cloud: `update_trigger` with `enabled: false`; local: tell the owner to stop
+the `/loop`). **Exception:** the coordinator's watchdog keeps running until
+every chain in the fleet is done, because it keeps the trunk. When they are
+all done, the coordinator also replaces the `_Not yet run._` line under
+"Wrap-up" and tells the owner in one line whether the trunk is releasable: its
+head, the release pull request, its checks, and any open release blocker.

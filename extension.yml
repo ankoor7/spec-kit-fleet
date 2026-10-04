@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: "fleet"
   name: "Fleet"
-  version: "0.1.0"
+  version: "0.2.0"
   description: "Build a feature's user stories in parallel chains of agent sessions, cross-checked for overlap and contradiction, merged through one trunk"
   category: "process"
   effect: "read-write"

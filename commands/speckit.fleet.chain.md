@@ -33,9 +33,12 @@ command.
   inbox.
 
 **Reporting upward**, in both transports: run
-`F message <fleet> <chain> <kind> --text "<body>"`. Cloud: it prints
-`{session_id, message}`; call `send_message` with exactly those. Local: it
-has already delivered. Bodies follow "Upward messages" at the end.
+`F message <fleet> <chain> <kind> --text "<body>"`. It sends the message to
+the session that launched this chain. In a fleet that holds several specs,
+that is the session of this chain's own spec. Cloud: it prints `recipients`;
+call `send_message` once per entry, with exactly its `session_id` and
+`message`. Local: it has already delivered. Bodies follow "Upward messages"
+at the end.
 
 ## 1. Read
 
@@ -217,7 +220,8 @@ overlap or a contradiction, treat it as a contradiction.
    checks at its next task boundary.
 4. `F close <fleet> <chain> <item> --status blocked --note "conflict <id>" --commits <committed task shas>`.
 5. Write the handoff with what actually happened in 1–4.
-6. Send `conflict`. Stop. Do not hand the baton.
+6. Send `conflict` with `--also <sibling chain>`, so that both sessions hear
+   it when the sibling belongs to another spec. Stop. Do not hand the baton.
 
 **At every task boundary** (before each cross-check), run
 `F conflicts <fleet> --open`. An `open` conflict naming this chain: commit the
