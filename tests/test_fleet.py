@@ -327,6 +327,32 @@ class JoinTest(FleetTest):
         wd = self.f("prompt", "watchdog", "albums", "--session", "local_orig2").stdout
         self.assertIn("local_orig2", wd)
 
+    def test_three_specs_join_in_turn(self):
+        self.publish()
+        for name, sess in (("002-search", "local_orig2"), ("003-share", "local_orig3")):
+            self.add_feature(name)
+            self.f("plan", "albums", f"specs/{name}", "--out", str(self.tmp / name))
+            self.f("join", "albums", "--from", str(self.tmp / name), "--originating", sess)
+        m = json.loads(self.f("get", "albums", "manifest.json").stdout)
+        self.assertEqual(len(m["chains"]), 12)
+        self.assertEqual(m["originating_session"], "local_orig1")
+        blocks = sorted(c["reserved"]["migrations"] for c in m["chains"])
+        self.assertTrue(all(a[1] < b[0] for a, b in zip(blocks, blocks[1:])), blocks)
+        self.f("check", "albums")
+        # The decider is the latest-joined spec among the chains a conflict
+        # names, not the latest spec in the fleet.
+        for chains in (["001-us1", "002-us1"], ["001-us1", "002-us1", "003-us1"]):
+            self.f("conflict", "albums", "--data", json.dumps({
+                "class": "contradiction", "status": "open", "found_by": "001-us1",
+                "chains": chains, "title": "t"}))
+        a = json.loads(self.f("decider", "albums", "c-001-us1-1").stdout)
+        self.assertEqual((a["decides"], a["inform"]), ("local_orig2", ["local_orig1"]))
+        b = json.loads(self.f("decider", "albums", "c-001-us1-2").stdout)
+        self.assertEqual((b["decides"], b["inform"]), ("local_orig3", ["local_orig1", "local_orig2"]))
+        self.f("message", "albums", "001-us1", "conflict", "--also", "002-us1", "--also", "003-us1", "--text", "x")
+        for sess in ("local_orig1", "local_orig2", "local_orig3"):
+            self.assertEqual(len(json.loads(self.f("inbox", "albums", "--session", sess).stdout)), 1, sess)
+
     def test_one_plan_two_specs(self):
         self.add_feature("002-search")
         self.f("plan", "both", "specs/001-albums", "specs/002-search", "--out", str(self.tmp / "d"))
